@@ -1,10 +1,22 @@
-# pip install langchain-community pypdf
+from langchain_core.documents import Document
+from pypdf import PdfReader
 
-from langchain_community.document_loaders import PyPDFLoader
 
 def load_pdf(file_path):
-    loader = PyPDFLoader(file_path)
+    reader = PdfReader(file_path)
 
-    documents = loader.load()
+    documents = []
+
+    for index, page in enumerate(reader.pages):
+        text = page.extract_text() or ""
+        documents.append(
+            Document(
+                page_content=text,
+                metadata={
+                    "source": file_path,
+                    "page": index
+                }
+            )
+        )
 
     return documents

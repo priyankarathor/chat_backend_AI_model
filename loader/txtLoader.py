@@ -1,11 +1,12 @@
-from langchain_community.document_loaders import TextLoader
+from langchain_core.documents import Document
 
 def load_txt(file_path):
-    loader = TextLoader(
-        file_path,
-        encoding="utf-8"
-    )
+    with open(file_path, "r", encoding="utf-8") as file:
+        text = file.read()
 
-    documents = loader.load()
-
-    return documents
+    return [
+        Document(
+            page_content=text,
+            metadata={"source": file_path}
+        )
+    ]

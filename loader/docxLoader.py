@@ -1,11 +1,13 @@
-# pip install docx2txt
-from langchain_community.document_loaders import Docx2txtLoader
+import docx2txt
+from langchain_core.documents import Document
 
 
 def load_docx(file_path):
+    text = docx2txt.process(file_path) or ""
 
-    loader = Docx2txtLoader(file_path)
-
-    documents = loader.load()
-
-    return documents
+    return [
+        Document(
+            page_content=text,
+            metadata={"source": file_path}
+        )
+    ]
