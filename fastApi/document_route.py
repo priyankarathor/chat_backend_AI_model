@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import os
 import shutil
 import uuid
+from pathlib import Path
 
 # ==============================
 # Loaders
@@ -81,11 +82,31 @@ def has_extractable_text(documents):
     )
 
 
+def get_allowed_extensions_message(file_extension: str) -> str:
+    allowed_extensions = ", ".join(
+        extension.upper().lstrip(".")
+        for extension in ALLOWED_EXTENSIONS
+    )
+
+    if not file_extension:
+        detected_extension = "no extension"
+    else:
+        detected_extension = file_extension
+
+    return (
+        f"Only {allowed_extensions} files are allowed. "
+        f"Detected: {detected_extension}."
+    )
+
+
 # ==============================
 # Upload folder
 # ==============================
 
-UPLOAD_FOLDER = "documents"
+UPLOAD_FOLDER = os.getenv(
+    "UPLOAD_FOLDER",
+    "/tmp/documents" if os.getenv("VERCEL") else "documents"
+)
 
 os.makedirs(
     UPLOAD_FOLDER,
@@ -152,13 +173,24 @@ async def upload_document(
             detail="Filename is required."
         )
 
+    original_filename = Path(
+        file.filename.strip()
+    ).name
+
+    if not original_filename:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Filename is required."
+        )
+
 
     # ======================================================
     # STEP 3: GET FILE EXTENSION
     # ======================================================
 
     file_extension = os.path.splitext(
-        file.filename
+        original_filename
     )[1].lower()
 
 
@@ -170,10 +202,7 @@ async def upload_document(
 
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Only PDF, CSV, Excel, HTML, TXT, DOCX, "
-                "PNG, JPG, JPEG, SVG and WEBP files are allowed."
-            )
+            detail=get_allowed_extensions_message(file_extension)
         )
 
 
@@ -198,7 +227,7 @@ async def upload_document(
 
     unique_filename = (
         f"{uuid.uuid4().hex}_"
-        f"{file.filename}"
+        f"{original_filename}"
     )
 
 
@@ -263,7 +292,7 @@ async def upload_document(
 
             "user_id": user_id,
 
-            "filename": file.filename,
+            "filename": original_filename,
 
             "stored_filename": unique_filename,
 
@@ -427,7 +456,7 @@ async def upload_document(
 
                 "document_id": document_id,
 
-                "filename": file.filename,
+                "filename": original_filename,
 
                 "stored_filename": unique_filename
 
@@ -532,7 +561,7 @@ async def upload_document(
 
             "document_id": document_id,
 
-            "filename": file.filename,
+            "filename": original_filename,
 
             "file_type": file_extension,
 

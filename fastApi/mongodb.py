@@ -23,12 +23,14 @@ async def connect_to_mongodb():
     database_name = os.getenv("DATABASE_NAME")
 
     if not mongodb_url:
-        raise ValueError("MONGODB_URL environment variable is missing")
+        print("MONGODB_URL environment variable is missing")
+        return False
 
     if not database_name:
-        raise ValueError("DATABASE_NAME environment variable is missing")
+        print("DATABASE_NAME environment variable is missing")
+        return False
 
-    print("🔄 Connecting to MongoDB...")
+    print("Connecting to MongoDB...")
 
     try:
 
@@ -44,11 +46,12 @@ async def connect_to_mongodb():
         # Test connection
         await mongodb.client.admin.command("ping")
 
-        print("✅ MongoDB connected successfully!")
+        print("MongoDB connected successfully!")
+        return True
 
     except Exception as e:
 
-        print(f"❌ MongoDB connection failed: {e}")
+        print(f"MongoDB connection failed: {e}")
 
         # Clean up failed connection
         if mongodb.client:
@@ -57,7 +60,7 @@ async def connect_to_mongodb():
         mongodb.client = None
         mongodb.database = None
 
-        raise
+        return False
 
 
 async def close_mongodb_connection():
@@ -66,10 +69,10 @@ async def close_mongodb_connection():
 
         try:
             mongodb.client.close()
-            print("✅ MongoDB connection closed")
+            print("MongoDB connection closed")
 
         except Exception as e:
-            print(f"⚠️ Error closing MongoDB: {e}")
+            print(f"Error closing MongoDB: {e}")
 
         finally:
             mongodb.client = None

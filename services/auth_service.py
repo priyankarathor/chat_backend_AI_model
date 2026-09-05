@@ -1,11 +1,25 @@
-from passlib.context import CryptContext
+import bcrypt
+
 from fastApi.mongodb import mongodb
 
 from utils.security import create_access_token
-pwd_context = CryptContext(
-    schemes=["bcrypt"],
-    deprecated="auto"
-)
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(
+        password.encode("utf-8"),
+        bcrypt.gensalt()
+    ).decode("utf-8")
+
+
+def verify_password(password: str, hashed_password: str) -> bool:
+    try:
+        return bcrypt.checkpw(
+            password.encode("utf-8"),
+            hashed_password.encode("utf-8")
+        )
+    except ValueError:
+        return False
 
 
 class AuthService:
@@ -32,7 +46,7 @@ class AuthService:
             }
 
         # Password hash
-        hashed_password = pwd_context.hash(user.password)
+        hashed_password = hash_password(user.password)
 
         # User data
         user_data = {
@@ -75,7 +89,7 @@ class AuthService:
             }
 
         # Step 2: Verify password
-        password_valid = pwd_context.verify(
+        password_valid = verify_password(
             user.password,
             existing_user["password"]
         )

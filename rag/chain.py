@@ -7,15 +7,21 @@ def ask_question(retriever, question):
     else:
         documents = retriever.get_relevant_documents(question)
 
-    context = "\n\n".join(document.page_content for document in documents)
+    context = "\n\n".join(
+        f"Source {index}:\n{document.page_content}"
+        for index, document in enumerate(documents, start=1)
+    )
 
     if not context.strip():
         return "I could not find relevant content in the uploaded document."
 
     prompt = f"""
-Use the document context below to answer the question.
+Answer the question using only the document context below.
+Do not use outside knowledge.
+If the document context does not contain the answer, reply exactly:
+I could not find that in the uploaded document.
 
-Context:
+Document context:
 {context}
 
 Question:

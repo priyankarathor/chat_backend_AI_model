@@ -1,3 +1,5 @@
+import os
+
 from langchain_chroma import Chroma
 
 from embeddings.embedding import get_embeddings
@@ -5,7 +7,10 @@ from embeddings.embedding import get_embeddings
 
 COLLECTION_NAME = "documents"
 
-PERSIST_DIRECTORY = "./chroma_db"
+PERSIST_DIRECTORY = os.getenv(
+    "CHROMA_PERSIST_DIRECTORY",
+    "/tmp/chroma_db" if os.getenv("VERCEL") else "./chroma_db"
+)
 
 
 def get_vectorstore():

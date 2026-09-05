@@ -14,15 +14,16 @@ def get_current_retriever():
     return current_retriever
 
 
-def get_user_retriever(user_id):
+def get_user_retriever(user_id, document_id=None):
 
     # Get existing ChromaDB
     vectorstore = get_vectorstore()
 
-    # Create retriever only for this user
+    # Create retriever for this user, optionally scoped to one document.
     retriever = get_retriever(
         vectorstore,
-        user_id
+        user_id,
+        document_id
     )
 
     return retriever

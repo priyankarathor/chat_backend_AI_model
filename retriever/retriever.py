@@ -1,4 +1,11 @@
-def get_retriever(vectorstore, user_id):
+def get_retriever(vectorstore, user_id, document_id=None):
+
+    metadata_filter = {
+        "user_id": user_id
+    }
+
+    if document_id:
+        metadata_filter["document_id"] = document_id
 
     retriever = vectorstore.as_retriever(
         search_type="mmr",
@@ -6,11 +13,8 @@ def get_retriever(vectorstore, user_id):
             "k": 5,
             "fetch_k": 20,
 
-            # Only retrieve documents belonging
-            # to the logged-in user
-            "filter": {
-                "user_id": user_id
-            }
+            # Only retrieve chunks belonging to the selected scope.
+            "filter": metadata_filter
         }
     )
 

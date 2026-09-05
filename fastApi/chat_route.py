@@ -12,6 +12,7 @@ router = APIRouter()
 
 class QuestionRequest(BaseModel):
     question: str
+    document_id: str | None = None
 
 
 @router.post("/ask")
@@ -22,7 +23,10 @@ def ask_document(
 
     user_id = current_user["user_id"]
 
-    retriever = get_user_retriever(user_id)
+    retriever = get_user_retriever(
+        user_id,
+        request.document_id
+    )
 
     # Check if a document has been uploaded
     if retriever is None:

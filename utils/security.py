@@ -22,6 +22,16 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(
 security = HTTPBearer()
 
 
+def get_jwt_secret_key():
+    if not SECRET_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="JWT_SECRET_KEY environment variable is missing"
+        )
+
+    return SECRET_KEY
+
+
 # ==========================
 # CREATE TOKEN
 # ==========================
@@ -38,7 +48,7 @@ def create_access_token(data: dict):
 
     return jwt.encode(
         payload,
-        SECRET_KEY,
+        get_jwt_secret_key(),
         algorithm=ALGORITHM
     )
 
@@ -57,7 +67,7 @@ async def get_current_user(
 
         payload = jwt.decode(
             token,
-            SECRET_KEY,
+            get_jwt_secret_key(),
             algorithms=[ALGORITHM]
         )
 

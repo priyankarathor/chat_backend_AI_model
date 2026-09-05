@@ -1,12 +1,15 @@
 # pip install pytesseract pillow
 
+import os
+
 from PIL import Image
 import pytesseract
 from langchain_core.documents import Document
 
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+tesseract_cmd = os.getenv("TESSERACT_CMD")
+
+if tesseract_cmd:
+    pytesseract.pytesseract.tesseract_cmd = tesseract_cmd
 
 def load_image(file_path):
 
