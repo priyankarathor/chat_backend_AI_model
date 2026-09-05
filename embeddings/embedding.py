@@ -12,9 +12,12 @@ class HuggingFaceApiEmbeddings(Embeddings):
             "HUGGINGFACE_EMBEDDING_MODEL",
             "sentence-transformers/all-MiniLM-L6-v2"
         )
-        self.api_url = (
-            "https://api-inference.huggingface.co/pipeline/"
-            f"feature-extraction/{self.model}"
+        self.api_url = os.getenv(
+            "HUGGINGFACE_EMBEDDING_URL",
+            (
+                "https://router.huggingface.co/hf-inference/models/"
+                f"{self.model}/pipeline/feature-extraction"
+            )
         )
 
         if not self.api_token:
@@ -23,21 +26,28 @@ class HuggingFaceApiEmbeddings(Embeddings):
             )
 
     def _embed(self, texts: list[str]) -> list[list[float]]:
-        response = requests.post(
-            self.api_url,
-            headers={
-                "Authorization": f"Bearer {self.api_token}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "inputs": texts,
-                "options": {
-                    "wait_for_model": True
-                }
-            },
-            timeout=60,
-        )
-        response.raise_for_status()
+        try:
+            response = requests.post(
+                self.api_url,
+                headers={
+                    "Authorization": f"Bearer {self.api_token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "inputs": texts,
+                    "options": {
+                        "wait_for_model": True
+                    }
+                },
+                timeout=60,
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(
+                "Could not generate embeddings from Hugging Face. "
+                "Check HUGGINGFACEHUB_API_TOKEN, Vercel network/DNS, and "
+                f"HUGGINGFACE_EMBEDDING_URL={self.api_url}."
+            ) from exc
 
         data: Any = response.json()
 
@@ -78,3 +88,4 @@ def get_embeddings():
 
 
 get_enbeddings = get_embeddings
+
