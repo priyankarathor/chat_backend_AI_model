@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "pip install -r requirements.txt",
   "functions": {
     "main.py": {
       "excludeFiles": "{.venv/**,hf_env/**,chroma_db/**,documents/**,**/__pycache__/**,*.pyc}"
