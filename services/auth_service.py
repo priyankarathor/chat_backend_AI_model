@@ -80,7 +80,7 @@ class AuthService:
         existing_user = await users_collection.find_one(
             {"email": user.email}
         )
-
+        # all details
         # User not found
         if not existing_user:
             return {
