@@ -14,8 +14,27 @@ load_dotenv()
 SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 
-ACCESS_TOKEN_EXPIRE_MINUTES = int(
-    os.getenv("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", 60)
+def get_int_env(*names: str, default: int) -> int:
+    for name in names:
+        value = os.getenv(name)
+
+        if value is None:
+            continue
+
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{name} must be a whole number of minutes"
+            ) from exc
+
+    return default
+
+
+ACCESS_TOKEN_EXPIRE_MINUTES = get_int_env(
+    "JWT_ACCESS_TOKEN_EXPIRE_MINUTES",
+    "ACCESS_TOKEN_EXPIRE_MINUTES",
+    default=60,
 )
 
 
@@ -87,11 +106,18 @@ async def get_current_user(
     except jwt.ExpiredSignatureError:
         raise HTTPException(
             status_code=401,
-            detail="Token expired"
+            detail="Session expired. Please sign in again.",
+            headers={
+                "WWW-Authenticate": (
+                    'Bearer error="invalid_token", '
+                    'error_description="The access token expired"'
+                )
+            },
         )
 
     except jwt.InvalidTokenError:
         raise HTTPException(
             status_code=401,
-            detail="Invalid token"
+            detail="Invalid token",
+            headers={"WWW-Authenticate": "Bearer"},
         )
