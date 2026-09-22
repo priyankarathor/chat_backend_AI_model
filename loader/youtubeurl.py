@@ -1,11 +1,28 @@
+import os
 import re
 from urllib.parse import parse_qs, urlparse
 
 from langchain_core.documents import Document
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api.proxies import GenericProxyConfig
 
 
 YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
+
+
+def _create_youtube_api() -> YouTubeTranscriptApi:
+    http_proxy = os.getenv("YOUTUBE_HTTP_PROXY")
+    https_proxy = os.getenv("YOUTUBE_HTTPS_PROXY")
+
+    if not http_proxy and not https_proxy:
+        return YouTubeTranscriptApi()
+
+    return YouTubeTranscriptApi(
+        proxy_config=GenericProxyConfig(
+            http_url=http_proxy or https_proxy,
+            https_url=https_proxy or http_proxy,
+        )
+    )
 
 
 def extract_youtube_video_id(video_url: str) -> str:
@@ -51,8 +68,18 @@ def _snippet_text(snippet) -> str:
 
 def load_youtube_url(video_url: str, languages: list[str] | None = None):
     video_id = extract_youtube_video_id(video_url)
-    api = YouTubeTranscriptApi()
-    transcript_list = api.list(video_id)
+    api = _create_youtube_api()
+
+    try:
+        transcript_list = api.list(video_id)
+    except Exception as exc:
+        if exc.__class__.__name__ in {"IpBlocked", "RequestBlocked"}:
+            raise ValueError(
+                "YouTube blocked transcript requests from this server IP. "
+                "Configure YOUTUBE_HTTPS_PROXY with a rotating residential "
+                "proxy URL, restart the backend, and try again."
+            ) from exc
+        raise
 
     available_transcripts = list(transcript_list)
 
