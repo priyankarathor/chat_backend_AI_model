@@ -419,6 +419,16 @@ async def upload_youtube_url(
 
     if not processed_documents:
 
+        if len(failed_documents) == 1:
+            failure = failed_documents[0]
+            raise HTTPException(
+                status_code=400,
+                detail=failure.get(
+                    "error",
+                    "The YouTube video could not be processed."
+                )
+            )
+
         raise HTTPException(
             status_code=400,
             detail={
@@ -427,13 +437,21 @@ async def upload_youtube_url(
             }
         )
 
-    return {
+    response = {
         "success": True,
         "message": "YouTube URL transcripts processed successfully.",
         "user_id": user_id,
         "documents": processed_documents,
         "failed": failed_documents
     }
+
+    if len(processed_documents) == 1:
+        processed_document = processed_documents[0]
+        if "answer" in processed_document:
+            response["question"] = processed_document.get("question")
+            response["answer"] = processed_document["answer"]
+
+    return response
 
 
 # ==========================================================

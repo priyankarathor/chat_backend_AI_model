@@ -88,6 +88,11 @@ def load_youtube_url(video_url: str, languages: list[str] | None = None):
         if text
     )
 
+    if not transcript_text.strip():
+        raise ValueError(
+            "The YouTube transcript is empty. Try a video that has captions enabled."
+        )
+
     return [
         Document(
             page_content=transcript_text,
