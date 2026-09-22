@@ -1,7 +1,9 @@
 import os
 import re
+from html import unescape
 from urllib.parse import parse_qs, urlparse
 
+import requests
 from langchain_core.documents import Document
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api.proxies import GenericProxyConfig
@@ -66,6 +68,65 @@ def _snippet_text(snippet) -> str:
     return getattr(snippet, "text", "")
 
 
+def _load_transcript_with_ytdlp(
+    video_url: str,
+    languages: list[str] | None = None,
+) -> tuple[str, str | None]:
+    from yt_dlp import YoutubeDL
+
+    proxy = os.getenv("YOUTUBE_HTTPS_PROXY") or os.getenv("YOUTUBE_HTTP_PROXY")
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+    }
+    if proxy:
+        options["proxy"] = proxy
+
+    with YoutubeDL(options) as downloader:
+        info = downloader.extract_info(video_url, download=False)
+
+    captions = info.get("subtitles") or info.get("automatic_captions") or {}
+    preferred_languages = languages or ["en", "en-US", "en-GB", "hi"]
+    language = next(
+        (code for code in preferred_languages if captions.get(code)),
+        next(iter(captions), None),
+    )
+    if not language:
+        raise ValueError("No captions are available for this YouTube video.")
+
+    formats = captions[language]
+    subtitle = next(
+        (item for item in formats if item.get("ext") == "json3"),
+        None,
+    )
+    if not subtitle or not subtitle.get("url"):
+        raise ValueError("No supported YouTube caption format is available.")
+
+    response = requests.get(
+        subtitle["url"],
+        headers=subtitle.get("http_headers"),
+        proxies={"http": proxy, "https": proxy} if proxy else None,
+        timeout=30,
+    )
+    response.raise_for_status()
+    events = response.json().get("events", [])
+    lines = []
+    for event in events:
+        text = "".join(
+            segment.get("utf8", "")
+            for segment in event.get("segs", [])
+        ).strip()
+        if text:
+            lines.append(unescape(text))
+
+    transcript_text = "\n".join(lines)
+    if not transcript_text.strip():
+        raise ValueError("The YouTube captions are empty.")
+
+    return transcript_text, language
+
+
 def load_youtube_url(video_url: str, languages: list[str] | None = None):
     video_id = extract_youtube_video_id(video_url)
     api = _create_youtube_api()
@@ -74,11 +135,29 @@ def load_youtube_url(video_url: str, languages: list[str] | None = None):
         transcript_list = api.list(video_id)
     except Exception as exc:
         if exc.__class__.__name__ in {"IpBlocked", "RequestBlocked"}:
-            raise ValueError(
-                "YouTube blocked transcript requests from this server IP. "
-                "Configure YOUTUBE_HTTPS_PROXY with a rotating residential "
-                "proxy URL, restart the backend, and try again."
-            ) from exc
+            try:
+                transcript_text, language = _load_transcript_with_ytdlp(
+                    video_url,
+                    languages,
+                )
+            except Exception as fallback_exc:
+                raise ValueError(
+                    "YouTube blocked transcript requests from this server IP, "
+                    "and the alternate caption method also failed. Change "
+                    "network or configure YOUTUBE_HTTPS_PROXY with a rotating "
+                    "residential proxy URL, then restart the backend."
+                ) from fallback_exc
+
+            return [
+                Document(
+                    page_content=transcript_text,
+                    metadata={
+                        "source": video_url,
+                        "video_id": video_id,
+                        "language": language,
+                    },
+                )
+            ], video_id
         raise
 
     available_transcripts = list(transcript_list)
