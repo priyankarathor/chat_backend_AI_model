@@ -13,6 +13,8 @@ import shutil
 import uuid
 from pathlib import Path
 
+from pydantic import BaseModel
+
 # ==============================
 # Loaders
 # ==============================
@@ -23,6 +25,8 @@ from loader.txtLoader import load_txt
 from loader.csvLoader import load_csv
 from loader.htmLoader import load_HTML
 from loader.imageLoader import load_image
+from loader.excelLoader import load_excel
+from loader.youtubeurl import load_youtube_url
 
 
 # ==============================
@@ -52,6 +56,8 @@ from vectorstore.chroma_store import create_vectorstore
 
 from retriever.retriever import get_retriever
 from services.rag_services import set_retriever
+from rag.chain import ask_question
+from llm.groq import GroqConfigError
 
 
 # ==============================
@@ -73,6 +79,12 @@ from fastApi.mongodb import mongodb
 # ==============================
 
 router = APIRouter()
+
+
+class YouTubeUrlRequest(BaseModel):
+    urls: list[str]
+    question: str | None = None
+    languages: list[str] | None = None
 
 
 def has_extractable_text(documents):
@@ -97,6 +109,31 @@ def get_allowed_extensions_message(file_extension: str) -> str:
         f"Only {allowed_extensions} files are allowed. "
         f"Detected: {detected_extension}."
     )
+
+
+def add_user_metadata_to_chunks(
+    chunks,
+    user_id: str,
+    document_id: str,
+    filename: str,
+    stored_filename: str | None = None
+):
+    for chunk in chunks:
+
+        if not chunk.metadata:
+
+            chunk.metadata = {}
+
+        metadata = {
+            "user_id": user_id,
+            "document_id": document_id,
+            "filename": filename,
+        }
+
+        if stored_filename:
+            metadata["stored_filename"] = stored_filename
+
+        chunk.metadata.update(metadata)
 
 
 # ==============================
@@ -133,6 +170,270 @@ ALLOWED_EXTENSIONS = [
     ".svg",
     ".webp"
 ]
+
+
+# ==========================================================
+# UPLOAD YOUTUBE URL
+# ==========================================================
+
+@router.post("/youtube-url")
+async def upload_youtube_url(
+
+    request: YouTubeUrlRequest,
+
+    current_user: dict = Depends(get_current_user)
+
+):
+
+    user_id = current_user["user_id"]
+
+    if not request.urls:
+
+        raise HTTPException(
+            status_code=400,
+            detail="At least one YouTube URL is required."
+        )
+
+    if mongodb.database is None:
+
+        raise HTTPException(
+            status_code=500,
+            detail="MongoDB database is not connected."
+        )
+
+    documents_collection = mongodb.database[
+        "documents"
+    ]
+
+    processed_documents = []
+    failed_documents = []
+
+    for video_url in request.urls:
+
+        document_id = str(
+            uuid.uuid4()
+        )
+
+        video_url = video_url.strip()
+
+        if not video_url:
+
+            failed_documents.append({
+                "url": video_url,
+                "error": "YouTube URL cannot be empty."
+            })
+
+            continue
+
+        try:
+
+            await documents_collection.insert_one({
+
+                "document_id": document_id,
+
+                "user_id": user_id,
+
+                "filename": video_url,
+
+                "stored_filename": None,
+
+                "file_path": video_url,
+
+                "file_type": "youtube",
+
+                "status": "processing",
+
+                "documents_count": 0,
+
+                "chunks_count": 0,
+
+                "error_message": None,
+
+                "created_at": datetime.now(
+                    timezone.utc
+                ),
+
+                "updated_at": datetime.now(
+                    timezone.utc
+                )
+
+            })
+
+            documents, video_id = load_youtube_url(
+                video_url,
+                request.languages
+            )
+
+            if not documents or not has_extractable_text(documents):
+
+                raise HTTPException(
+                    status_code=400,
+                    detail="No transcript text could be extracted from this YouTube URL."
+                )
+
+            chunks = split_document(
+                documents
+            )
+
+            if not chunks:
+
+                raise HTTPException(
+                    status_code=400,
+                    detail="No text chunks were created from this YouTube transcript."
+                )
+
+            add_user_metadata_to_chunks(
+                chunks,
+                user_id,
+                document_id,
+                video_url
+            )
+
+            embedding = get_embeddings()
+
+            vectorstore = create_vectorstore(
+                chunks,
+                embedding
+            )
+
+            retriever = get_retriever(
+                vectorstore,
+                user_id,
+                document_id
+            )
+
+            set_retriever(
+                retriever
+            )
+
+            answer = None
+
+            if request.question:
+
+                answer = ask_question(
+                    retriever,
+                    request.question
+                )
+
+            await documents_collection.update_one(
+                {
+                    "document_id": document_id
+                },
+                {
+                    "$set": {
+                        "status": "completed",
+                        "video_id": video_id,
+                        "documents_count": len(documents),
+                        "chunks_count": len(chunks),
+                        "updated_at": datetime.now(
+                            timezone.utc
+                        )
+                    }
+                }
+            )
+
+            processed_document = {
+                "document_id": document_id,
+                "url": video_url,
+                "video_id": video_id,
+                "documents": len(documents),
+                "chunks": len(chunks),
+                "status": "completed"
+            }
+
+            if answer is not None:
+                processed_document["question"] = request.question
+                processed_document["answer"] = answer
+
+            processed_documents.append(
+                processed_document
+            )
+
+        except GroqConfigError as e:
+
+            await documents_collection.update_one(
+                {
+                    "document_id": document_id
+                },
+                {
+                    "$set": {
+                        "status": "failed",
+                        "error_message": str(e),
+                        "updated_at": datetime.now(
+                            timezone.utc
+                        )
+                    }
+                }
+            )
+
+            raise HTTPException(
+                status_code=401,
+                detail=str(e)
+            )
+
+        except HTTPException as e:
+
+            await documents_collection.update_one(
+                {
+                    "document_id": document_id
+                },
+                {
+                    "$set": {
+                        "status": "failed",
+                        "error_message": str(e.detail),
+                        "updated_at": datetime.now(
+                            timezone.utc
+                        )
+                    }
+                }
+            )
+
+            failed_documents.append({
+                "document_id": document_id,
+                "url": video_url,
+                "error": str(e.detail)
+            })
+
+        except Exception as e:
+
+            await documents_collection.update_one(
+                {
+                    "document_id": document_id
+                },
+                {
+                    "$set": {
+                        "status": "failed",
+                        "error_message": str(e),
+                        "updated_at": datetime.now(
+                            timezone.utc
+                        )
+                    }
+                }
+            )
+
+            failed_documents.append({
+                "document_id": document_id,
+                "url": video_url,
+                "error": str(e)
+            })
+
+    if not processed_documents:
+
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "No YouTube URLs were processed successfully.",
+                "failed": failed_documents
+            }
+        )
+
+    return {
+        "success": True,
+        "message": "YouTube URL transcripts processed successfully.",
+        "user_id": user_id,
+        "documents": processed_documents,
+        "failed": failed_documents
+    }
 
 
 # ==========================================================
@@ -383,10 +684,8 @@ async def upload_document(
             ".xlsx",
             ".xls"
         ]:
-
-            raise HTTPException(
-                status_code=400,
-                detail="Excel loader is not implemented yet."
+            documents = load_excel(
+                file_path
             )
 
 
@@ -443,24 +742,13 @@ async def upload_document(
         # STEP 12: ADD USER METADATA TO CHUNKS
         # ==================================================
 
-        for chunk in chunks:
-
-            if not chunk.metadata:
-
-                chunk.metadata = {}
-
-
-            chunk.metadata.update({
-
-                "user_id": user_id,
-
-                "document_id": document_id,
-
-                "filename": original_filename,
-
-                "stored_filename": unique_filename
-
-            })
+        add_user_metadata_to_chunks(
+            chunks,
+            user_id,
+            document_id,
+            original_filename,
+            unique_filename
+        )
 
 
         print(
@@ -501,7 +789,8 @@ async def upload_document(
 
         retriever = get_retriever(
                 vectorstore,
-                user_id
+                user_id,
+                document_id
             )
 
         # ==================================================

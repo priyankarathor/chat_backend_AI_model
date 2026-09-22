@@ -26,6 +26,7 @@ def get_groq_response(prompt):
                     "role": "system",
                     "content": (
                         "You answer strictly from the supplied document context. "
+                        "Answer in the same language as the user's question. "
                         "If the answer is not in the context, say that it could "
                         "not be found in the provided document."
                     )

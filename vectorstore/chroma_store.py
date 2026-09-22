@@ -5,7 +5,10 @@ from langchain_chroma import Chroma
 from embeddings.embedding import get_embeddings
 
 
-COLLECTION_NAME = "documents"
+COLLECTION_NAME = os.getenv(
+    "CHROMA_COLLECTION_NAME",
+    "documents_multilingual_v2"
+)
 
 PERSIST_DIRECTORY = os.getenv(
     "CHROMA_PERSIST_DIRECTORY",

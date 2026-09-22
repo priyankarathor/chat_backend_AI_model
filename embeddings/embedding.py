@@ -10,7 +10,7 @@ class HuggingFaceApiEmbeddings(Embeddings):
         self.api_token = os.getenv("HUGGINGFACEHUB_API_TOKEN")
         self.model = os.getenv(
             "HUGGINGFACE_EMBEDDING_MODEL",
-            "sentence-transformers/all-MiniLM-L6-v2"
+            "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         )
         self.api_url = os.getenv(
             "HUGGINGFACE_EMBEDDING_URL",
