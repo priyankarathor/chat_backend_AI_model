@@ -1,9 +1,10 @@
+import json
 import os
 import re
 from html import unescape
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-import requests
 from langchain_core.documents import Document
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
@@ -20,9 +21,14 @@ from youtube_transcript_api.proxies import GenericProxyConfig
 YOUTUBE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 
+def _youtube_proxy_urls() -> tuple[str | None, str | None]:
+    http_proxy = os.getenv("YOUTUBE_HTTP_PROXY") or os.getenv("HTTP_PROXY")
+    https_proxy = os.getenv("YOUTUBE_HTTPS_PROXY") or os.getenv("HTTPS_PROXY")
+    return http_proxy, https_proxy
+
+
 def _create_youtube_api() -> YouTubeTranscriptApi:
-    http_proxy = os.getenv("YOUTUBE_HTTP_PROXY")
-    https_proxy = os.getenv("YOUTUBE_HTTPS_PROXY")
+    http_proxy, https_proxy = _youtube_proxy_urls()
 
     if not http_proxy and not https_proxy:
         return YouTubeTranscriptApi()
@@ -116,10 +122,43 @@ def _load_blocked_youtube_transcript(
     except Exception as fallback_exc:
         raise ValueError(
             "YouTube blocked transcript requests from this server IP, "
-            "and the alternate caption method also failed. Change "
-            "network or configure YOUTUBE_HTTPS_PROXY with a rotating "
-            "residential proxy URL, then restart the backend."
+            "and the alternate caption method also failed: "
+            f"{_safe_fallback_error(fallback_exc)}"
         ) from fallback_exc
+
+
+def _safe_fallback_error(exc: Exception) -> str:
+    message = " ".join(str(exc).split())
+    proxy_urls = _youtube_proxy_urls()
+    for proxy_url in proxy_urls:
+        if proxy_url:
+            message = message.replace(proxy_url, "<configured proxy>")
+
+    if not message:
+        return "unknown caption extraction error."
+
+    lowered = message.lower()
+    if "sign in to confirm" in lowered or "not a bot" in lowered:
+        return (
+            "YouTube requires authentication. Configure YOUTUBE_COOKIES_FILE "
+            "with an exported YouTube cookies.txt file, or use "
+            "YOUTUBE_HTTPS_PROXY, then restart the backend."
+        )
+    if "http error 429" in lowered or "too many requests" in lowered:
+        return (
+            "YouTube rate-limited this server (HTTP 429). Configure "
+            "YOUTUBE_HTTPS_PROXY with a rotating residential proxy URL, then "
+            "restart the backend."
+        )
+    if "http error 403" in lowered or "forbidden" in lowered:
+        return (
+            "YouTube denied the caption download (HTTP 403). Configure "
+            "YOUTUBE_COOKIES_FILE or YOUTUBE_HTTPS_PROXY, then restart the backend."
+        )
+    if "no captions are available" in lowered:
+        return "this video does not expose captions."
+
+    return message[:300]
 
 
 def _load_transcript_with_ytdlp(
@@ -127,8 +166,10 @@ def _load_transcript_with_ytdlp(
     languages: list[str] | None = None,
 ) -> tuple[str, str | None]:
     from yt_dlp import YoutubeDL
+    from yt_dlp.networking import Request
 
-    proxy = os.getenv("YOUTUBE_HTTPS_PROXY") or os.getenv("YOUTUBE_HTTP_PROXY")
+    http_proxy, https_proxy = _youtube_proxy_urls()
+    proxy = https_proxy or http_proxy
     options = {
         "quiet": True,
         "no_warnings": True,
@@ -137,37 +178,47 @@ def _load_transcript_with_ytdlp(
     if proxy:
         options["proxy"] = proxy
 
+    cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
+    if cookies_file:
+        cookie_path = Path(cookies_file).expanduser()
+        if not cookie_path.is_file():
+            raise ValueError(
+                f"YOUTUBE_COOKIES_FILE does not exist: {cookie_path}"
+            )
+        options["cookiefile"] = str(cookie_path)
+
     with YoutubeDL(options) as downloader:
         info = downloader.extract_info(video_url, download=False)
 
-    captions = {
-        **(info.get("automatic_captions") or {}),
-        **(info.get("subtitles") or {}),
-    }
-    preferred_languages = languages or ["en", "en-US", "en-GB", "hi"]
-    language = next(
-        (code for code in preferred_languages if captions.get(code)),
-        next(iter(captions), None),
-    )
-    if not language:
-        raise ValueError("No captions are available for this YouTube video.")
+        captions = {
+            **(info.get("automatic_captions") or {}),
+            **(info.get("subtitles") or {}),
+        }
+        preferred_languages = languages or ["en", "en-US", "en-GB", "hi"]
+        language = next(
+            (code for code in preferred_languages if captions.get(code)),
+            next(iter(captions), None),
+        )
+        if not language:
+            raise ValueError("No captions are available for this YouTube video.")
 
-    formats = captions[language]
-    subtitle = next(
-        (item for item in formats if item.get("ext") == "json3"),
-        None,
-    )
-    if not subtitle or not subtitle.get("url"):
-        raise ValueError("No supported YouTube caption format is available.")
+        formats = captions[language]
+        subtitle = next(
+            (item for item in formats if item.get("ext") == "json3"),
+            None,
+        )
+        if not subtitle or not subtitle.get("url"):
+            raise ValueError("No supported YouTube caption format is available.")
 
-    response = requests.get(
-        subtitle["url"],
-        headers=subtitle.get("http_headers"),
-        proxies={"http": proxy, "https": proxy} if proxy else None,
-        timeout=30,
-    )
-    response.raise_for_status()
-    events = response.json().get("events", [])
+        # Reuse yt-dlp's opener so its cookies, headers, and proxy stay attached.
+        request = Request(
+            subtitle["url"],
+            headers=subtitle.get("http_headers"),
+            method="GET",
+            extensions={"timeout": 30},
+        )
+        with downloader.urlopen(request) as response:
+            events = json.loads(response.read()).get("events", [])
     lines = []
     for event in events:
         text = "".join(
