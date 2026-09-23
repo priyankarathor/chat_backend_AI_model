@@ -25,3 +25,13 @@ Do not commit the cookies file. On a hosted backend, mount it as a secret file
 and set `YOUTUBE_COOKIES_FILE` to the mounted path. Cookies can help with
 sign-in checks, but an IP block or HTTP 429 still requires a different network
 or a rotating residential proxy.
+
+If both transcript methods are blocked, the backend now uses the existing
+`GROQ_API_KEY` to transcribe the video's smallest audio-only stream with
+`whisper-large-v3-turbo`. This fallback is limited to 24 MB and incurs Groq
+speech-to-text usage (currently about $0.04 per audio hour). Override the model
+only when needed:
+
+```env
+GROQ_TRANSCRIPTION_MODEL=whisper-large-v3-turbo
+```

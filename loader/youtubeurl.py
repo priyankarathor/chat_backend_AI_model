@@ -1,10 +1,12 @@
 import json
 import os
 import re
+import tempfile
 from html import unescape
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import requests
 from langchain_core.documents import Document
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import (
@@ -114,17 +116,24 @@ def _load_blocked_youtube_transcript(
     video_url: str,
     languages: list[str] | None,
 ):
+    caption_error = None
     try:
         return _load_transcript_with_ytdlp(
             video_url,
             languages,
         )
-    except Exception as fallback_exc:
+    except Exception as exc:
+        caption_error = exc
+
+    try:
+        return _transcribe_youtube_audio(video_url, languages)
+    except Exception as audio_exc:
         raise ValueError(
             "YouTube blocked transcript requests from this server IP, "
-            "and the alternate caption method also failed: "
-            f"{_safe_fallback_error(fallback_exc)}"
-        ) from fallback_exc
+            "and both caption and audio transcription fallbacks failed. "
+            f"Caption error: {_safe_fallback_error(caption_error)} "
+            f"Audio error: {_safe_fallback_error(audio_exc)}"
+        ) from audio_exc
 
 
 def _safe_fallback_error(exc: Exception) -> str:
@@ -233,6 +242,134 @@ def _load_transcript_with_ytdlp(
         raise ValueError("The YouTube captions are empty.")
 
     return transcript_text, language
+
+
+def _transcribe_youtube_audio(
+    video_url: str,
+    languages: list[str] | None = None,
+) -> tuple[str, str | None]:
+    from groq import Groq
+    from yt_dlp import YoutubeDL
+
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY is required for the audio fallback.")
+
+    http_proxy, https_proxy = _youtube_proxy_urls()
+    proxy = https_proxy or http_proxy
+    options = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+    }
+    if proxy:
+        options["proxy"] = proxy
+
+    cookies_file = os.getenv("YOUTUBE_COOKIES_FILE")
+    if cookies_file:
+        cookie_path = Path(cookies_file).expanduser()
+        if not cookie_path.is_file():
+            raise ValueError(
+                f"YOUTUBE_COOKIES_FILE does not exist: {cookie_path}"
+            )
+        options["cookiefile"] = str(cookie_path)
+
+    with YoutubeDL(options) as downloader:
+        info = downloader.extract_info(video_url, download=False)
+
+    supported_extensions = {
+        "flac", "mp3", "mp4", "mpeg", "mpga", "m4a", "ogg", "wav", "webm"
+    }
+    audio_formats = [
+        item
+        for item in info.get("formats", [])
+        if item.get("url")
+        and item.get("acodec") not in {None, "none"}
+        and item.get("vcodec") == "none"
+        and item.get("ext") in supported_extensions
+    ]
+    if not audio_formats:
+        raise ValueError("YouTube did not expose a supported audio stream.")
+
+    def audio_size(item: dict) -> float:
+        size = item.get("filesize") or item.get("filesize_approx")
+        if size:
+            return float(size)
+
+        duration = info.get("duration")
+        bitrate = item.get("abr") or item.get("tbr")
+        if duration and bitrate:
+            return float(duration) * float(bitrate) * 125
+        return float("inf")
+
+    audio_format = min(
+        audio_formats,
+        key=lambda item: (audio_size(item), item.get("abr") or float("inf")),
+    )
+    max_audio_bytes = 24 * 1024 * 1024
+    estimated_size = audio_size(audio_format)
+    if estimated_size != float("inf") and estimated_size > max_audio_bytes:
+        raise ValueError(
+            "The smallest YouTube audio stream exceeds the 24 MB transcription limit."
+        )
+
+    http_proxy, https_proxy = _youtube_proxy_urls()
+    proxies = None
+    if http_proxy or https_proxy:
+        proxies = {
+            "http": http_proxy or https_proxy,
+            "https": https_proxy or http_proxy,
+        }
+    transcription_args = {
+        "model": os.getenv(
+            "GROQ_TRANSCRIPTION_MODEL",
+            "whisper-large-v3-turbo",
+        ),
+        "response_format": "json",
+        "temperature": 0.0,
+        "timeout": 90,
+    }
+    language = None
+    if languages:
+        requested_language = languages[0].split("-", 1)[0].lower()
+        if re.fullmatch(r"[a-z]{2}", requested_language):
+            transcription_args["language"] = requested_language
+            language = requested_language
+
+    suffix = f".{audio_format['ext']}"
+    with tempfile.NamedTemporaryFile(suffix=suffix) as audio_file:
+        with requests.get(
+            audio_format["url"],
+            headers=audio_format.get("http_headers"),
+            proxies=proxies,
+            allow_redirects=True,
+            stream=True,
+            timeout=60,
+        ) as media_response:
+            media_response.raise_for_status()
+            downloaded_bytes = 0
+            for chunk in media_response.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                downloaded_bytes += len(chunk)
+                if downloaded_bytes > max_audio_bytes:
+                    raise ValueError(
+                        "The YouTube audio stream exceeds the 24 MB transcription limit."
+                    )
+                audio_file.write(chunk)
+
+        audio_file.flush()
+        audio_file.seek(0)
+        transcription = Groq(api_key=api_key).audio.transcriptions.create(
+            file=(f"youtube{suffix}", audio_file.read()),
+            **transcription_args,
+        )
+    transcript_text = getattr(transcription, "text", "").strip()
+    if not transcript_text:
+        raise ValueError("Groq returned an empty audio transcription.")
+
+    return transcript_text, language or info.get("language")
 
 
 def load_youtube_url(video_url: str, languages: list[str] | None = None):
