@@ -53,6 +53,7 @@ def ask_document(
 
     return {
         "user_id": user_id,
+        "document_id": request.document_id,
         "question": request.question,
         "answer": answer
     }

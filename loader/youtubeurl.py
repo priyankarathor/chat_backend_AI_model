@@ -6,6 +6,14 @@ from urllib.parse import parse_qs, urlparse
 import requests
 from langchain_core.documents import Document
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import (
+    AgeRestricted,
+    CouldNotRetrieveTranscript,
+    IpBlocked,
+    RequestBlocked,
+    TranscriptsDisabled,
+    VideoUnavailable,
+)
 from youtube_transcript_api.proxies import GenericProxyConfig
 
 
@@ -68,6 +76,52 @@ def _snippet_text(snippet) -> str:
     return getattr(snippet, "text", "")
 
 
+def _is_youtube_block_error(exc: Exception) -> bool:
+    return isinstance(exc, (IpBlocked, RequestBlocked))
+
+
+def _raise_readable_youtube_error(exc: Exception) -> None:
+    if isinstance(exc, TranscriptsDisabled):
+        raise ValueError(
+            "No transcript is available because captions are disabled for this YouTube video."
+        ) from exc
+
+    if isinstance(exc, AgeRestricted):
+        raise ValueError(
+            "This YouTube video is age-restricted, so its transcript cannot be retrieved."
+        ) from exc
+
+    if isinstance(exc, VideoUnavailable):
+        raise ValueError("This YouTube video is unavailable.") from exc
+
+    if isinstance(exc, CouldNotRetrieveTranscript):
+        raise ValueError(
+            "Could not retrieve a transcript for this YouTube video. "
+            "Try another captioned video or configure YOUTUBE_HTTPS_PROXY if YouTube "
+            "is blocking this server."
+        ) from exc
+
+    raise exc
+
+
+def _load_blocked_youtube_transcript(
+    video_url: str,
+    languages: list[str] | None,
+):
+    try:
+        return _load_transcript_with_ytdlp(
+            video_url,
+            languages,
+        )
+    except Exception as fallback_exc:
+        raise ValueError(
+            "YouTube blocked transcript requests from this server IP, "
+            "and the alternate caption method also failed. Change "
+            "network or configure YOUTUBE_HTTPS_PROXY with a rotating "
+            "residential proxy URL, then restart the backend."
+        ) from fallback_exc
+
+
 def _load_transcript_with_ytdlp(
     video_url: str,
     languages: list[str] | None = None,
@@ -86,7 +140,10 @@ def _load_transcript_with_ytdlp(
     with YoutubeDL(options) as downloader:
         info = downloader.extract_info(video_url, download=False)
 
-    captions = info.get("subtitles") or info.get("automatic_captions") or {}
+    captions = {
+        **(info.get("automatic_captions") or {}),
+        **(info.get("subtitles") or {}),
+    }
     preferred_languages = languages or ["en", "en-US", "en-GB", "hi"]
     language = next(
         (code for code in preferred_languages if captions.get(code)),
@@ -134,19 +191,11 @@ def load_youtube_url(video_url: str, languages: list[str] | None = None):
     try:
         transcript_list = api.list(video_id)
     except Exception as exc:
-        if exc.__class__.__name__ in {"IpBlocked", "RequestBlocked"}:
-            try:
-                transcript_text, language = _load_transcript_with_ytdlp(
-                    video_url,
-                    languages,
-                )
-            except Exception as fallback_exc:
-                raise ValueError(
-                    "YouTube blocked transcript requests from this server IP, "
-                    "and the alternate caption method also failed. Change "
-                    "network or configure YOUTUBE_HTTPS_PROXY with a rotating "
-                    "residential proxy URL, then restart the backend."
-                ) from fallback_exc
+        if _is_youtube_block_error(exc):
+            transcript_text, language = _load_blocked_youtube_transcript(
+                video_url,
+                languages,
+            )
 
             return [
                 Document(
@@ -158,7 +207,8 @@ def load_youtube_url(video_url: str, languages: list[str] | None = None):
                     },
                 )
             ], video_id
-        raise
+
+        _raise_readable_youtube_error(exc)
 
     available_transcripts = list(transcript_list)
 
@@ -184,7 +234,28 @@ def load_youtube_url(video_url: str, languages: list[str] | None = None):
         ]
         selected_transcript = (manual_transcripts or available_transcripts)[0]
 
-    transcript = selected_transcript.fetch()
+    try:
+        transcript = selected_transcript.fetch()
+    except Exception as exc:
+        if _is_youtube_block_error(exc):
+            transcript_text, language = _load_blocked_youtube_transcript(
+                video_url,
+                languages,
+            )
+
+            return [
+                Document(
+                    page_content=transcript_text,
+                    metadata={
+                        "source": video_url,
+                        "video_id": video_id,
+                        "language": language,
+                    },
+                )
+            ], video_id
+
+        _raise_readable_youtube_error(exc)
+
     transcript_text = "\n".join(
         text
         for text in (
